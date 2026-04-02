@@ -7,7 +7,30 @@ REPO_COL="repo_id"
 USE_MESSAGE_TFIDF = True
 
 MODEL_NAME = "xgb"
-THRESHOLD = 0.4
+THRESHOLDS = [0.6, 0.7]
+
+TFIDF_SHOW_TOP_WORDS = 30
+
+CV_TYPE = "leave_one_repo_out" # "group_kfold" or "leave_one_repo_out"
+N_SPLITS = 10
+
+# TFIDF_TEXT_SOURCES = ["message"]
+# TFIDF_TEXT_SOURCES = ["message", "file_path"]
+# TFIDF_TEXT_SOURCES = ["message", "patch"]
+# TFIDF_TEXT_SOURCES = ["message", "file_path", "patch"]
+# TFIDF_TEXT_SOURCES = ["user", "assistant", "tool", "file_path"]
+TFIDF_TEXT_SOURCES = ["assistant", "file_path"]
+# TFIDF_TEXT_SOURCES = ["function_name", "assistant", "file_path"]
+# TFIDF_TEXT_SOURCES = ["class_name", "assistant", "file_path"]
+# TFIDF_TEXT_SOURCES = ["function_name", "class_name", "assistant", "file_path"]
+# TFIDF_TEXT_SOURCES = ["assistant", "file_path", "function_name", "import_name"]
+
+TFIDF_MAX_FEATURES = 1000
+TFIDF_MIN_DF = 5
+TFIDF_MAX_DF = 0.8
+TFIDF_NGRAM_RANGE = (1, 2)
+TFIDF_STOP_WORDS = "english"
+TFIDF_SUBLINEAR_TF = True
 
 # Current default: use non-empty patch only
 USE_NON_EMPTY_ONLY=True
@@ -19,6 +42,16 @@ PATCH_FEATURES = [
     "num_files_touched",
     "test_file_modified",
     "contain_repeated_blocks",
+    "num_test_files_touched",
+    "num_python_files_touched",
+    "touch_requirements_file",
+    "touch_config_file",
+    "touch_docs_file",
+    "touch_init_file",
+    "touch_multiple_dirs",
+    # "contains_assert_change",
+    # "contains_import_change",
+    # "contains_exception_handling_change",
 ]
     
 MESSAGE_FEATURES = [ 
