@@ -15,7 +15,7 @@ def main():
     if USE_NON_EMPTY_ONLY:
         df = df[df["patch_is_empty"] == 0].copy()
 
-    results_df, summary_df = run_cv(
+    results_df, summary_df, threshold_selection_df, threshold_summary_df = run_cv(
         df=df,
         feature_cols=FEATURE_COLS,
         log_features=LOG_FEATURES,
@@ -29,18 +29,36 @@ def main():
 
     results_path = results_dir / f"{cv_tag}_{MODEL_NAME}_{DATASET_SPLIT}_{tfidf_tag}_thrscan_{threshold_tag}_results.csv"
     summary_path = results_dir / f"{cv_tag}_{MODEL_NAME}_{DATASET_SPLIT}_{tfidf_tag}_thrscan_{threshold_tag}_summary.csv"
+    thresholds_path = results_dir / f"{cv_tag}_{MODEL_NAME}_{DATASET_SPLIT}_{tfidf_tag}_threshold_selection.csv"
+    fixed_thresholds_path = results_dir / f"{cv_tag}_{MODEL_NAME}_{DATASET_SPLIT}_{tfidf_tag}_fixed_threshold_summary.csv"
+
 
     results_df.to_csv(results_path, index=False)
     summary_df.to_csv(summary_path, index=False)
+    threshold_selection_df.to_csv(thresholds_path, index=False)
+    threshold_summary_df.to_csv(fixed_thresholds_path, index=False)
 
     print("Saved:", results_path)
     print("Saved:", summary_path)
+    print("Saved:", thresholds_path)
+    print("Saved:", fixed_thresholds_path)
     print("\nSummary by threshold:")
     print("Model:", MODEL_NAME)
     print("CV_TYPE:", CV_TYPE)
     print("Thresholds:", THRESHOLDS)
     print("Use message TF-IDF:", USE_MESSAGE_TFIDF)
-    print(summary_df.to_string(index=False))
+    display_cols = [
+        "chosen_threshold",
+        "success_precision",
+        "success_recall",
+        "success_f1",
+        "failure_precision",
+        "failure_recall",
+        "failure_f1",
+        "accuracy",
+        "success_auc",
+    ]
+    print(summary_df[display_cols].to_string(index=False))
 
 
 if __name__ == "__main__":

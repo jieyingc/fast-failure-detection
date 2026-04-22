@@ -1,4 +1,5 @@
-from sklearn.model_selection import GroupShuffleSplit, GroupKFold
+from sklearn.model_selection import GroupKFold
+
 
 def leave_one_repo_out_splits(df, repo_col="repo_id", max_folds=None):
     """

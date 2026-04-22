@@ -6,3 +6,5 @@ results/*.csv
 results/*.json
 results/*.pkl
 .idea/
+anaconda_projects/
+project_dump.txt

@@ -1,8 +1,53 @@
 import json
 import re
+from collections import Counter
+
 import pandas as pd
 from tqdm import tqdm
+
 from .data_loading import extract_repo_id
+
+
+def normalize_command_text(text: str) -> str:
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def is_test_command(command: str) -> bool:
+    cmd = normalize_command_text(command)
+
+    test_patterns = [r"\bpytest\b", r"\bpy\.test\b", r"\bpython\s+-m\s+pytest\b", r"\bpython\s+-m\s+unittest\b",
+                     r"\bunittest\b", r"\bnosetests?\b", r"\btox\b", r"\bnox\b", r"\bmake\s+test\b",
+                     r"\bmake\s+check\b", r"\bctest\b", r"\bnpm\s+test\b", r"\byarn\s+test\b", r"\bpnpm\s+test\b",
+                     r"\bjest\b", r"\bvitest\b", r"\bgo\s+test\b", r"\bcargo\s+test\b",
+                     ]
+    return any(re.search(pat, cmd) for pat in test_patterns)
+
+
+def extract_edit_file_path(tool_call: dict) -> str:
+    """
+    Try to recover edited file path from edit-related tool call arguments.
+    Returns normalized lowercase path or empty string if unavailable.
+    """
+    if not isinstance(tool_call, dict):
+        return ""
+
+    fn = tool_call.get("function", {})
+    args = fn.get("arguments", "")
+
+    if not isinstance(args, str) or not args.strip():
+        return ""
+
+    patterns = [r'"path"\s*:\s*"([^"]+)"', r'"file_path"\s*:\s*"([^"]+)"', r'"filename"\s*:\s*"([^"]+)"',
+                r'"target_file"\s*:\s*"([^"]+)"',
+                ]
+
+    for pat in patterns:
+        m = re.search(pat, args)
+        if m:
+            return m.group(1).strip().lower()
+    return ""
 
 
 def build_feature_df(dataset_split):
@@ -21,7 +66,9 @@ def extract_features(row):
     except Exception:
         msgs = []
 
+    # -----------------------------
     # Patch-level features
+    # -----------------------------
     patch_is_empty = int(patch_stripped == "")
     patch_char_len = len(patch)
 
@@ -36,11 +83,9 @@ def extract_features(row):
             num_lines_removed += 1
 
     num_files_touched = patch.count("diff --git")
-
     touched_files = re.findall(r"diff --git a/(.*?) b/(.*?)\n", patch)
 
     test_file_modified = 0
-    file_paths = []
     path_tokens = []
     top_level_dirs = set()
 
@@ -51,13 +96,13 @@ def extract_features(row):
     touch_docs_file = 0
     touch_init_file = 0
 
-    config_keywords = {"config","setup.py","pyproject.toml","tox.ini","pytest.ini","mypy.ini",".flake8","dockerfile","makefile","cmakelists.txt","package.json",}
-
-    docs_keywords = {"readme","docs/",".md",".rst",}
+    config_keywords = {"config", "setup.py", "pyproject.toml", "tox.ini", "pytest.ini", "mypy.ini", ".flake8",
+                       "dockerfile", "makefile", "cmakelists.txt", "package.json",
+                       }
+    docs_keywords = {"readme", "docs/", ".md", ".rst"}
 
     for _, b_path in touched_files:
         path = b_path.lower()
-        file_paths.append(path)
 
         if (
             "test" in path
@@ -83,13 +128,11 @@ def extract_features(row):
         if path.endswith("__init__.py"):
             touch_init_file = 1
 
-            # track top-level dirs
         if "/" in path:
             top_level_dirs.add(path.split("/")[0])
         else:
             top_level_dirs.add(path)
 
-        # tokenize path for TF-IDF text
         parts = re.split(r"[\\/._-]+", path)
         parts = [p for p in parts if p]
         path_tokens.extend(parts)
@@ -114,7 +157,6 @@ def extract_features(row):
         if max(line_freq.values()) >= 3:
             contain_repeated_blocks = 1
 
-    # patch text for later TF-IDF
     patch_tokens = []
     for line in code_lines:
         toks = re.split(r"[^a-zA-Z0-9_]+", line.lower())
@@ -135,79 +177,23 @@ def extract_features(row):
         any(kw in patch_text_lower for kw in exception_keywords)
     )
 
-    function_names = []
-    class_names = []
-    for line in code_lines:
-        m_func = re.search(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
-        m_class = re.search(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)", line)
-        if m_func:
-            function_names.append(m_func.group(1).lower())
-        if m_class:
-            class_names.append(m_class.group(1).lower())
-
-    function_name_text_clean = " ".join(function_names)
-    class_name_text_clean = " ".join(class_names)
-
-    import_names = []
-    for line in code_lines:
-        stripped = line.strip()
-
-        # import x, y as z
-        m_import = re.match(r"^import\s+(.+)$", stripped)
-        if m_import:
-            rhs = m_import.group(1)
-            parts = [p.strip() for p in rhs.split(",")]
-
-            for part in parts:
-                # remove alias: "numpy as np" -> "numpy"
-                part = re.sub(r"\s+as\s+\w+$", "", part).strip()
-                if part:
-                    import_names.append(part.lower())
-
-                    # also split dotted module path: "a.b.c" -> a b c
-                    dotted_parts = [x for x in part.split(".") if x]
-                    import_names.extend([x.lower() for x in dotted_parts])
-
-        # from x.y import a, b as c
-        m_from = re.match(r"^from\s+([A-Za-z0-9_\.]+)\s+import\s+(.+)$", stripped)
-        if m_from:
-            module_name = m_from.group(1).strip()
-            imported_rhs = m_from.group(2).strip()
-
-            if module_name:
-                import_names.append(module_name.lower())
-                dotted_parts = [x for x in module_name.split(".") if x]
-                import_names.extend([x.lower() for x in dotted_parts])
-
-            imported_parts = [p.strip() for p in imported_rhs.split(",")]
-            for part in imported_parts:
-                part = re.sub(r"\s+as\s+\w+$", "", part).strip()
-                if part and part != "*":
-                    import_names.append(part.lower())
-
-    import_name_text_clean = " ".join(import_names)
-
+    # -----------------------------
     # Message-level features
+    # -----------------------------
     num_messages = len(msgs)
     messages_char_len = len(row["messages"])
-
-    num_assistant_messages = 0
-    num_user_messages = 0
-    num_tool_messages = 0
-    num_system_messages = 0
 
     num_action_messages = 0
     num_observation_messages = 0
 
-    has_submit = 0
     num_submit_calls = 0
-
-    has_bash = 0
     num_bash_calls = 0
-
-    has_str_replace_editor = 0
     num_edit_calls = 0
-    num_error_messages = 0
+
+    num_test_commands = 0
+
+    test_commands_seen = []
+    edit_file_counter = Counter()
 
     message_text_parts = []
     user_text_parts = []
@@ -215,35 +201,25 @@ def extract_features(row):
     tool_text_parts = []
     tool_observation_text_parts = []
 
-    edit_tool_names = {"str_replace_editor", "edit_file", "create_file", "insert", "replace", "write_file",}
+    edit_tool_names = {
+        "str_replace_editor",
+        "edit_file",
+        "create_file",
+        "insert",
+        "replace",
+        "write_file",
+    }
 
-    error_keywords = ["error", "exception", "traceback", "failed", "failure", "syntaxerror", "typeerror", "valueerror", "assertionerror",]
-
-    for msg in msgs:
+    for msg_idx, msg in enumerate(msgs):
         role = msg.get("role", "")
-        if role == "assistant":
-            num_assistant_messages += 1
-        elif role == "user":
-            num_user_messages += 1
-        elif role == "tool":
-            num_tool_messages += 1
-        elif role == "system":
-            num_system_messages += 1
-
         message_type = msg.get("message_type", "")
+
         if message_type == "action":
             num_action_messages += 1
         elif message_type == "observation":
             num_observation_messages += 1
 
-        action_text = str(msg.get("action", "")).lower()
-
-        if "submit" in action_text:
-            has_submit = 1
-        if "bash" in action_text:
-            has_bash = 1
-        if "str_replace_editor" in action_text:
-            has_str_replace_editor = 1
+        content = msg.get("content", "")
 
         tool_calls = msg.get("tool_calls", [])
         if isinstance(tool_calls, list):
@@ -251,20 +227,26 @@ def extract_features(row):
                 fn_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
                 fn_name = str(fn_name).lower()
 
+                fn_args = ""
+                if isinstance(tc, dict):
+                    fn_args = tc.get("function", {}).get("arguments", "")
+                fn_args = str(fn_args)
+
                 if fn_name == "submit":
-                    has_submit = 1
                     num_submit_calls += 1
+
                 if fn_name == "bash":
-                    has_bash = 1
                     num_bash_calls += 1
-                if fn_name == "str_replace_editor":
-                    has_str_replace_editor = 1
+                    if is_test_command(fn_args):
+                        num_test_commands += 1
+                        test_commands_seen.append(normalize_command_text(fn_args))
+
                 if fn_name in edit_tool_names:
                     num_edit_calls += 1
 
-        text_blobs = []
-
-        content = msg.get("content", "")
+                    edit_path = extract_edit_file_path(tc)
+                    if edit_path:
+                        edit_file_counter[edit_path] += 1
 
         def add_text_by_role(text_value, role_value, message_type_value):
             text_value = text_value.lower()
@@ -281,28 +263,12 @@ def extract_features(row):
 
         if isinstance(content, str):
             add_text_by_role(content, role, message_type)
-            text_blobs.append(content.lower())
-
         elif isinstance(content, list):
             for item in content:
                 if isinstance(item, dict):
                     t = item.get("text", "")
                     if isinstance(t, str):
                         add_text_by_role(t, role, message_type)
-                        text_blobs.append(t.lower())
-
-        # thought is currently identical to content, so we do not add it to message_text_clean to avoid duplicated text in TF-IDF.
-        # thought = msg.get("thought", "")
-        #  if isinstance(thought, str):
-        #     thought_lower = thought.lower()
-        #     text_blobs.append(thought_lower)
-        #     message_text_parts.append(thought_lower)
-
-        text_blobs.append(action_text)
-        joined_text = " ".join(text_blobs)
-
-        for kw in error_keywords:
-            num_error_messages += joined_text.count(kw)
 
     message_text_clean = " ".join(message_text_parts)
     user_text_clean = " ".join(user_text_parts)
@@ -324,7 +290,6 @@ def extract_features(row):
         "num_files_touched": num_files_touched,
         "test_file_modified": test_file_modified,
         "contain_repeated_blocks": contain_repeated_blocks,
-
         "num_test_files_touched": num_test_files_touched,
         "num_python_files_touched": num_python_files_touched,
         "touch_requirements_file": touch_requirements_file,
@@ -335,33 +300,21 @@ def extract_features(row):
 
         "num_messages": num_messages,
         "messages_char_len": messages_char_len,
-        "num_assistant_messages": num_assistant_messages,
-        "num_user_messages": num_user_messages,
-        "num_tool_messages": num_tool_messages,
-        "num_system_messages": num_system_messages,
         "num_action_messages": num_action_messages,
         "num_observation_messages": num_observation_messages,
-        "has_submit": has_submit,
         "num_submit_calls": num_submit_calls,
-        "has_bash": has_bash,
         "num_bash_calls": num_bash_calls,
-        "has_str_replace_editor": has_str_replace_editor,
         "num_edit_calls": num_edit_calls,
-        "num_error_messages": num_error_messages,
 
         "message_text_clean": message_text_clean,
         "user_text_clean": user_text_clean,
         "assistant_text_clean": assistant_text_clean,
         "tool_text_clean": tool_text_clean,
+        "tool_observation_text_clean": tool_observation_text_clean,
         "file_path_text_clean": file_path_text_clean,
         "patch_text_clean": patch_text_clean,
-        "tool_observation_text_clean": tool_observation_text_clean,
 
         "contains_assert_change": contains_assert_change,
         "contains_import_change": contains_import_change,
         "contains_exception_handling_change": contains_exception_handling_change,
-
-        "function_name_text_clean": function_name_text_clean,
-        "class_name_text_clean": class_name_text_clean,
-        "import_name_text_clean": import_name_text_clean,
     }
