@@ -1,6 +1,5 @@
 import json
 import re
-from collections import Counter
 
 import pandas as pd
 from tqdm import tqdm
@@ -190,11 +189,6 @@ def extract_features(row):
     num_bash_calls = 0
     num_edit_calls = 0
 
-    num_test_commands = 0
-
-    test_commands_seen = []
-    edit_file_counter = Counter()
-
     message_text_parts = []
     user_text_parts = []
     assistant_text_parts = []
@@ -227,26 +221,14 @@ def extract_features(row):
                 fn_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
                 fn_name = str(fn_name).lower()
 
-                fn_args = ""
-                if isinstance(tc, dict):
-                    fn_args = tc.get("function", {}).get("arguments", "")
-                fn_args = str(fn_args)
-
                 if fn_name == "submit":
                     num_submit_calls += 1
 
                 if fn_name == "bash":
                     num_bash_calls += 1
-                    if is_test_command(fn_args):
-                        num_test_commands += 1
-                        test_commands_seen.append(normalize_command_text(fn_args))
 
                 if fn_name in edit_tool_names:
                     num_edit_calls += 1
-
-                    edit_path = extract_edit_file_path(tc)
-                    if edit_path:
-                        edit_file_counter[edit_path] += 1
 
         def add_text_by_role(text_value, role_value, message_type_value):
             text_value = text_value.lower()

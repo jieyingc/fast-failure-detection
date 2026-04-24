@@ -12,6 +12,23 @@ def main():
 
     df = pd.read_csv(results_dir / f"{DATASET_SPLIT}_features_full.csv")
 
+    proxy_path = results_dir / f"{DATASET_SPLIT}_proxy_metadata.csv"
+    if proxy_path.exists():
+        proxy_df = pd.read_csv(proxy_path)
+
+        join_cols = ["instance_id"]
+        if all(col in proxy_df.columns for col in ["instance_id", "traj_id", "repo_id"]) and \
+                all(col in df.columns for col in ["instance_id", "traj_id", "repo_id"]):
+            join_cols = ["instance_id", "traj_id", "repo_id"]
+        elif "traj_id" in proxy_df.columns and "traj_id" in df.columns:
+            join_cols = ["instance_id", "traj_id"]
+
+        df = df.merge(proxy_df, on=join_cols, how="left")
+        print(f"Merged proxy metadata from: {proxy_path}")
+        print("After merge:", df.shape)
+    else:
+        print(f"Proxy metadata not found: {proxy_path}")
+
     if USE_NON_EMPTY_ONLY:
         df = df[df["patch_is_empty"] == 0].copy()
 
@@ -57,6 +74,11 @@ def main():
         "failure_f1",
         "accuracy",
         "success_auc",
+        "skipped_test_count",
+        "skipped_repo_avg_test_count",
+        "discarded_success_step",
+        "num_correctly_skipped_failures",
+        "num_discarded_successes",
     ]
     print(summary_df[display_cols].to_string(index=False))
 

@@ -1,4 +1,6 @@
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, precision_score, recall_score
+import numpy as np
+
 
 def compute_metrics(y_true, y_pred, y_prob):
     try:
@@ -43,3 +45,42 @@ def compute_dual_metrics(y_true_success, y_pred_success, y_prob_success):
         "failure_recall": failure_recall,
         "failure_f1": failure_f1,
     }
+
+
+def compute_proxy_cost_metrics(
+    y_true_success,
+    y_pred_success,
+    gold_test_count=None,
+    repo_avg_gold_test_count=None,
+    trajectory_step=None,
+):
+    y_true_success = np.asarray(y_true_success)
+    y_pred_success = np.asarray(y_pred_success)
+
+    predicted_failure_mask = (y_pred_success == 0)
+    actual_failure_mask = (y_true_success == 0)
+    actual_success_mask = (y_true_success == 1)
+
+    correctly_skipped_failure_mask = predicted_failure_mask & actual_failure_mask
+    discarded_success_mask = predicted_failure_mask & actual_success_mask
+
+    out = {}
+
+    if gold_test_count is not None:
+        gold_test_count = np.asarray(gold_test_count, dtype=float)
+        out["skipped_test_count"] = float(gold_test_count[correctly_skipped_failure_mask].sum())
+
+    if repo_avg_gold_test_count is not None:
+        repo_avg_gold_test_count = np.asarray(repo_avg_gold_test_count, dtype=float)
+        out["skipped_repo_avg_test_count"] = float(
+            repo_avg_gold_test_count[correctly_skipped_failure_mask].sum()
+        )
+
+    if trajectory_step is not None:
+        trajectory_step = np.asarray(trajectory_step, dtype=float)
+        out["discarded_success_step"] = float(trajectory_step[discarded_success_mask].sum())
+
+    out["num_correctly_skipped_failures"] = int(correctly_skipped_failure_mask.sum())
+    out["num_discarded_successes"] = int(discarded_success_mask.sum())
+
+    return out

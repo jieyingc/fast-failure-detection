@@ -5,7 +5,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 
 from .models import get_model
-from .evaluate import compute_metrics, compute_dual_metrics
+from .evaluate import compute_metrics, compute_dual_metrics, compute_proxy_cost_metrics
 
 from .splits import group_kfold_repo_splits, leave_one_repo_out_splits
 from .config import (LABEL_COL, CV_TYPE, N_SPLITS, TFIDF_TEXT_SOURCES, TFIDF_SHOW_TOP_WORDS, TFIDF_MAX_FEATURES, TFIDF_MIN_DF, TFIDF_MAX_DF, TFIDF_NGRAM_RANGE, TFIDF_STOP_WORDS, TFIDF_SUBLINEAR_TF, THRESHOLDS, MIN_SUCCESS_RECALL)
@@ -77,13 +77,14 @@ def prepare_features(train_df, test_df, feature_cols, log_features, use_message_
             X_train_text = tfidf.fit_transform(train_text)
             X_test_text = tfidf.transform(test_text)
 
-            feature_names = tfidf.get_feature_names_out()
-            mean_tfidf = X_train_text.mean(axis=0).A1
-            top_idx = mean_tfidf.argsort()[::-1][:TFIDF_SHOW_TOP_WORDS]
+            if TFIDF_SHOW_TOP_WORDS and TFIDF_SHOW_TOP_WORDS > 0:
+                feature_names = tfidf.get_feature_names_out()
+                mean_tfidf = X_train_text.mean(axis=0).A1
+                top_idx = mean_tfidf.argsort()[::-1][:TFIDF_SHOW_TOP_WORDS]
 
-            print(f"\n[TF-IDF:{src}] top {len(top_idx)} features by mean TF-IDF:")
-            for idx in top_idx:
-                print(feature_names[idx], round(mean_tfidf[idx], 6))
+                print(f"\n[TF-IDF:{src}] top {len(top_idx)} features by mean TF-IDF:")
+                for idx in top_idx:
+                    print(feature_names[idx], round(mean_tfidf[idx], 6))
 
             matrices_train.append(X_train_text)
             matrices_test.append(X_test_text)
@@ -151,20 +152,18 @@ def run_cv(
     per_fold_threshold_rows = []
 
     if CV_TYPE == "group_kfold":
-        split_iter = group_kfold_repo_splits(
-            df,
-            repo_col="repo_id",
-            n_splits=N_SPLITS,
-        )
+        split_iter = group_kfold_repo_splits(df, repo_col="repo_id", n_splits=N_SPLITS,)
+        num_folds = N_SPLITS
     elif CV_TYPE == "leave_one_repo_out":
         split_iter = leave_one_repo_out_splits(df, repo_col="repo_id")
+        num_folds = df["repo_id"].nunique()
     else:
         raise ValueError(f"Unknown CV_TYPE: {CV_TYPE}")
 
-    for fold_id, train_df, test_df in split_iter:
-        # -----------------------------
+    for fold_idx, (fold_id, train_df, test_df) in enumerate(split_iter, start=1):
+        print(f"[Fold {fold_idx}/{num_folds}] fold_id={fold_id} train={len(train_df)} test={len(test_df)}")
+
         # 1) inner split for threshold tuning
-        # -----------------------------
         inner_train_df, inner_val_df = make_inner_train_val_split(train_df, repo_col="repo_id")
 
         X_inner_train, y_inner_train, X_inner_val, y_inner_val = prepare_features(
@@ -187,12 +186,12 @@ def run_cv(
             min_success_recall=min_success_recall,
         )
 
+        print(f"  chosen_threshold={chosen_threshold:.3f}")
+
         threshold_df["fold_id"] = fold_id
         threshold_selection_rows.append(threshold_df)
 
-        # -----------------------------
         # 2) retrain on full outer-train
-        # -----------------------------
         X_train, y_train, X_test, y_test = prepare_features(
             train_df=train_df,
             test_df=test_df,
@@ -213,6 +212,15 @@ def run_cv(
             y_prob_success=success_prob_test,
         )
 
+        proxy_metrics = compute_proxy_cost_metrics(
+            y_true_success=y_test.values if hasattr(y_test, "values") else y_test,
+            y_pred_success=y_pred_success,
+            gold_test_count=test_df["gold_test_count"].values if "gold_test_count" in test_df.columns else None,
+            repo_avg_gold_test_count=test_df[
+                "repo_avg_gold_test_count"].values if "repo_avg_gold_test_count" in test_df.columns else None,
+            trajectory_step=test_df["trajectory_step"].values if "trajectory_step" in test_df.columns else None,
+        )
+
         for threshold in THRESHOLDS:
             y_pred_success_fixed = (success_prob_test >= threshold).astype(int)
 
@@ -222,17 +230,35 @@ def run_cv(
                 y_prob_success=success_prob_test,
             )
 
+            fixed_proxy_metrics = compute_proxy_cost_metrics(
+                y_true_success=y_test.values if hasattr(y_test, "values") else y_test,
+                y_pred_success=y_pred_success_fixed,
+                gold_test_count=test_df["gold_test_count"].values if "gold_test_count" in test_df.columns else None,
+                repo_avg_gold_test_count=test_df[
+                    "repo_avg_gold_test_count"].values if "repo_avg_gold_test_count" in test_df.columns else None,
+                trajectory_step=test_df["trajectory_step"].values if "trajectory_step" in test_df.columns else None,
+            )
+
             per_fold_threshold_rows.append({
                 "fold_id": fold_id,
                 "threshold": threshold,
+
                 "success_precision": fixed_metrics["success_precision"],
                 "success_recall": fixed_metrics["success_recall"],
                 "success_f1": fixed_metrics["success_f1"],
+
                 "failure_precision": fixed_metrics["failure_precision"],
                 "failure_recall": fixed_metrics["failure_recall"],
                 "failure_f1": fixed_metrics["failure_f1"],
+
                 "accuracy": fixed_metrics["accuracy"],
                 "success_auc": fixed_metrics["success_auc"],
+
+                "skipped_test_count": fixed_proxy_metrics.get("skipped_test_count"),
+                "skipped_repo_avg_test_count": fixed_proxy_metrics.get("skipped_repo_avg_test_count"),
+                "discarded_success_step": fixed_proxy_metrics.get("discarded_success_step"),
+                "num_correctly_skipped_failures": fixed_proxy_metrics.get("num_correctly_skipped_failures"),
+                "num_discarded_successes": fixed_proxy_metrics.get("num_discarded_successes"),
             })
 
         rows.append({
@@ -251,6 +277,12 @@ def run_cv(
 
             "accuracy": metrics["accuracy"],
             "success_auc": metrics["success_auc"],
+
+            "skipped_test_count": proxy_metrics.get("skipped_test_count"),
+            "skipped_repo_avg_test_count": proxy_metrics.get("skipped_repo_avg_test_count"),
+            "discarded_success_step": proxy_metrics.get("discarded_success_step"),
+            "num_correctly_skipped_failures": proxy_metrics.get("num_correctly_skipped_failures"),
+            "num_discarded_successes": proxy_metrics.get("num_discarded_successes"),
         })
 
     results_df = pd.DataFrame(rows)
@@ -267,6 +299,12 @@ def run_cv(
             "failure_f1",
             "accuracy",
             "success_auc",
+
+            "skipped_test_count",
+            "skipped_repo_avg_test_count",
+            "discarded_success_step",
+            "num_correctly_skipped_failures",
+            "num_discarded_successes",
         ]
     ].mean(numeric_only=True)
 
@@ -301,16 +339,24 @@ def select_threshold_on_validation(
 
     for threshold in thresholds:
         y_pred_success = (success_prob_val >= threshold).astype(int)
-        metrics = compute_dual_metrics(y_val_success, y_pred_success, success_prob_val)
+
+        metrics = compute_dual_metrics(
+            y_true_success=y_val_success,
+            y_pred_success=y_pred_success,
+            y_prob_success=success_prob_val,
+        )
 
         rows.append({
             "threshold": threshold,
+
+            "success_precision": metrics["success_precision"],
             "success_recall": metrics["success_recall"],
+            "success_f1": metrics["success_f1"],
+
             "failure_precision": metrics["failure_precision"],
             "failure_recall": metrics["failure_recall"],
             "failure_f1": metrics["failure_f1"],
-            "success_precision": metrics["success_precision"],
-            "success_f1": metrics["success_f1"],
+
             "accuracy": metrics["accuracy"],
             "success_auc": metrics["success_auc"],
         })
@@ -322,12 +368,12 @@ def select_threshold_on_validation(
     if len(valid_df) > 0:
         best_row = valid_df.sort_values(
             by=["failure_precision", "success_recall"],
-            ascending=[False, False]
+            ascending=[False, False],
         ).iloc[0]
     else:
         best_row = threshold_df.sort_values(
             by=["success_recall", "failure_precision"],
-            ascending=[False, False]
+            ascending=[False, False],
         ).iloc[0]
 
     return float(best_row["threshold"]), threshold_df
