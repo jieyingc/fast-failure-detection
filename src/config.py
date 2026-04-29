@@ -8,7 +8,7 @@ USE_NON_EMPTY_ONLY = True
 USE_MESSAGE_TFIDF = True
 
 MODEL_NAME = "xgb"
-THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
+THRESHOLDS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
 MIN_SUCCESS_RECALL = 0.8
 
 CV_TYPE = "group_kfold"  # "group_kfold" or "leave_one_repo_out"
